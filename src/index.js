@@ -5,49 +5,60 @@ const decoder = new TextDecoder();
 
 export default {
   async fetch(request, env) {
-    if (request.method !== "POST") {
-      return json({ error: "POST only" }, 405);
+    try {
+      if (!env.SMTP_PASS) {
+        return json({ ok: false, error: "missing SMTP_PASS secret" }, 500);
+      }
+
+      if (!env.SMTP_USER) {
+        return json({ ok: false, error: "missing SMTP_USER secret" }, 500);
+      }
+
+      const payload = await readPayload(request);
+      const smsText = payload.text || payload.body || payload.message || "";
+      const sender = payload.sender || payload.from || "";
+      const smsTo = payload.to || "";
+      const mailTo = env.MAIL_TO || env.SMTP_USER;
+      const receivedAt = payload.date || payload.time || new Date().toISOString();
+
+      const subject = `iPhone短信${sender ? ` - ${sender}` : ""}`;
+      const body = [
+        `发件号码: ${sender || "-"}`,
+        `收件号码: ${smsTo || "-"}`,
+        `接收时间: ${receivedAt}`,
+        "",
+        smsText
+      ].join("\n");
+
+      await sendMail(env, { to: mailTo, subject, body });
+      return json({ ok: true });
+    } catch (error) {
+      console.error(error);
+      return json({ ok: false, error: getErrorMessage(error) }, 500);
     }
-
-    if (!env.SMTP_PASS) {
-      return json({ error: "missing SMTP_PASS secret" }, 500);
-    }
-
-    const payload = await readPayload(request);
-    const smsText = payload.text || payload.body || payload.message || "";
-    const sender = payload.sender || payload.from || "";
-    const to = payload.to || env.MAIL_TO;
-    const receivedAt = payload.date || payload.time || new Date().toISOString();
-
-    const subject = `iPhone短信${sender ? ` - ${sender}` : ""}`;
-    const body = [
-      `发件号码: ${sender || "-"}`,
-      `接收时间: ${receivedAt}`,
-      "",
-      smsText
-    ].join("\n");
-
-    await sendMail(env, { to, subject, body });
-    return json({ ok: true });
   }
 };
 
 async function readPayload(request) {
   const contentType = request.headers.get("content-type") || "";
+  const query = Object.fromEntries(new URL(request.url).searchParams.entries());
 
   if (contentType.includes("application/json")) {
-    return await request.json();
+    return { ...query, ...(await request.json()) };
   }
 
   if (contentType.includes("application/x-www-form-urlencoded")) {
     const form = await request.formData();
-    return Object.fromEntries(form.entries());
+    return { ...query, ...Object.fromEntries(form.entries()) };
   }
 
-  return { text: await request.text() };
+  const text = await request.text();
+  return { ...query, text: text || query.text || query.body || query.message || "" };
 }
 
 async function sendMail(env, { to, subject, body }) {
+  const from = env.MAIL_FROM || env.SMTP_USER;
+
   const socket = connect(
     {
       hostname: env.SMTP_HOST || "smtp.139.com",
@@ -65,14 +76,14 @@ async function sendMail(env, { to, subject, body }) {
     await cmd(reader, writer, `AUTH LOGIN`, 334);
     await cmd(reader, writer, b64(env.SMTP_USER), 334);
     await cmd(reader, writer, b64(env.SMTP_PASS), 235);
-    await cmd(reader, writer, `MAIL FROM:<${env.MAIL_FROM}>`, 250);
+    await cmd(reader, writer, `MAIL FROM:<${from}>`, 250);
     await cmd(reader, writer, `RCPT TO:<${to}>`, 250);
     await cmd(reader, writer, `DATA`, 354);
 
     await write(
       writer,
       [
-        `From: <${env.MAIL_FROM}>`,
+        `From: <${from}>`,
         `To: <${to}>`,
         `Subject: ${mimeHeader(subject)}`,
         `MIME-Version: 1.0`,
@@ -144,4 +155,9 @@ function json(data, status = 200) {
     status,
     headers: { "content-type": "application/json; charset=utf-8" }
   });
+}
+
+function getErrorMessage(error) {
+  if (error instanceof Error) return error.message;
+  return String(error);
 }

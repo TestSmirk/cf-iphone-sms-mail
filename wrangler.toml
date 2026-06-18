@@ -5,6 +5,3 @@ compatibility_date = "2026-06-18"
 [vars]
 SMTP_HOST = "smtp.139.com"
 SMTP_PORT = "465"
-SMTP_USER = "your-phone@139.com"
-MAIL_FROM = "your-phone@139.com"
-MAIL_TO = "your-phone@139.com"
